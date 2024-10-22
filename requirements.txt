@@ -1,0 +1,11 @@
+streamlit
+pillow
+transformers
+torch
+requests
+logging
+requests
+json
+base64
+io
+langchain
