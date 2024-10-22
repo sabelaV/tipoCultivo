@@ -1,0 +1,9 @@
+streamlit
+pillow
+transformers
+torch
+requests
+json
+base64
+io
+langchain
