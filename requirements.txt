@@ -1,6 +1,0 @@
-streamlit
-pillow
-transformers
-torch
-requests
-langchain
