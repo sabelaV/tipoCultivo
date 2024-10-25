@@ -1,23 +1,17 @@
 import streamlit as st
 import json
 from PIL import Image
-import base64
-from io import BytesIO
-from langchain_core.prompts import PromptTemplate
-from langchain.schema import HumanMessage
-from langchain_core.output_parsers import StrOutputParser
 from groq import Groq
 import re
 import requests
-import torch
-from transformers import BlipProcessor, BlipForConditionalGeneration
 import logging
-import pdb
+from io import BytesIO
+import base64
 
 # Configurar logging
 logging.basicConfig(level=logging.DEBUG)
 
-def convert_to_base64(pil_image, max_size=(900, 900)):
+def convert_to_base64(pil_image, max_size=(1024, 1024)):
     """
     Convert PIL images to Base64 encoded strings and resize to reduce size
     """
@@ -29,7 +23,7 @@ def convert_to_base64(pil_image, max_size=(900, 900)):
         pil_image = pil_image.convert('RGB')
     
     buffered = BytesIO()
-    pil_image.save(buffered, format="JPEG", quality=85)
+    pil_image.save(buffered, format="JPEG", quality=150)
     img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
     return img_str
 
@@ -67,14 +61,12 @@ def cargar_cultivos_json(crop_name):
                 codigo, nombre = cultivo
                 nombre_normalized = nombre.lower()
                 
-                # Comprobar si el nombre comienza con crop_name
-                if nombre_normalized.startswith(crop_name_normalized):
-                    # Asegurarse de que hay un espacio después del nombre buscado o que es una coincidencia exacta
-                    if len(nombre) == len(crop_name) or nombre[len(crop_name)] == ' ':
-                        return codigo, nombre
+                # Comprobar si el nombre contiene crop_name
+                if crop_name_normalized in nombre_normalized:
+                    return codigo, nombre
         
         return None, None
-    
+
     # Eliminar comillas al principio y al final si están presentes
     crop_name = crop_name.strip("'\"")
 
@@ -87,14 +79,18 @@ def cargar_cultivos_json(crop_name):
             return codigo, nombre
         
         # Si no se encuentra, intentar buscar sin la 's' o 'es' final
-        crop_name_singular = crop_name.rstrip('es').rstrip('s')
+        if crop_name.lower().endswith('es'):
+            crop_name_singular = crop_name[:-2]
+        elif crop_name.lower().endswith('s'):
+            crop_name_singular = crop_name[:-1]
+        else:
+            crop_name_singular = crop_name
         
         codigo, nombre = buscar_cultivo(crop_name_singular, data)
         if codigo is not None and nombre is not None:
             return codigo, nombre
         
         # Manejar las variaciones de género
-        # En este caso, simplemente agregamos las versiones masculinas y femeninas comunes
         posibles_variantes = [crop_name_singular]  # Iniciamos con la versión singular
         if crop_name_singular.endswith('a'):  # Si termina en 'a', puede ser femenino
             posibles_variantes.append(crop_name_singular[:-1] + 'o')  # Cambia 'a' por 'o'
@@ -108,7 +104,7 @@ def cargar_cultivos_json(crop_name):
                 return codigo, nombre
         
         return None, None
-
+    
 # Function to extract crop name from the response
 def extract_crop_name(response_text):
     logging.debug("Extracting crop name from response")
@@ -116,40 +112,6 @@ def extract_crop_name(response_text):
     if match:
         return match.group(1).strip()
     return None
-
-# Initialize the BLIP model and processor
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-
-# Function to process image and generate description
-def describe_image(image_path):
-    logging.debug("Describing image")
-    image = Image.open(image_path)
-    inputs = processor(images=image, return_tensors="pt")
-
-    # Prepare a context prompt to focus on crops
-    context_prompt = "Describe the image focusing on identifying types of crops."
-    inputs['input_ids'] = processor.tokenizer(context_prompt, return_tensors="pt").input_ids
-
-    descriptions = []
-    for _ in range(3):  # Generate 5 descriptions
-        with torch.no_grad():
-            generated_ids = model.generate(
-                inputs['pixel_values'],
-                max_length=400,
-                do_sample=True,
-                temperature=0.1,
-                top_k=50,
-                top_p=0.95,
-                num_return_sequences=1
-            )
-
-        description = processor.decode(generated_ids[0], skip_special_tokens=True)
-        descriptions.append(description)
-    
-    # Combine the descriptions into a single detailed description
-    detailed_description = " ".join(descriptions)
-    return detailed_description
 
 # Streamlit app setup
 st.title("Analizador de Imágenes de Cultivos Agrícolas")
@@ -184,40 +146,44 @@ if st.button("Procesar imagen"):
                 st.error("Error al subir la imagen a Imgur")
                 st.stop()
 
-            # Generate a detailed description of the image using BLIP
-            detailed_description = describe_image(uploaded_file)
-            #st.write(f"Descripción generada de la imagen: {detailed_description}")
-
-            # Create the prompt
+           # Create the prompt
             prompt_text = f"""
-            Eres un asistente experimentado en el análisis de imágenes de cultivos agrícolas que categoriza con precisión las fotografías ajustándose a unas listas de valores dadas.
+            Rol: Eres un experto en análisis agrícola encargado de clasificar imágenes de cultivos con el más alto nivel de precisión para garantizar que nuestras decisiones comerciales se basen en datos confiables y precisos.
 
-            Analiza la siguiente descripción de la imagen y determina el tipo de cultivo principal que aparece en la fotografía devolviendo el siguiente formato:
-            "tipo de cultivo:" el nombre de ese tipo de cultivo principal detectado en la fotografía EN ESPAÑOL.
-            \n
-            "razonamiento:" una explicación detallada del por qué elegiste este cultivo.
+            Tarea: Analiza la siguiente imagen: {uploaded_file}. Tu objetivo es identificar el cultivo principal presente en la imagen utilizando un enfoque metódico y detallado.
 
-            Por favor, responde en español de España (español peninsular). Utiliza términos como "patata" en lugar de "papa" y "aguacate" en lugar de "palta", y sigue las normas gramaticales y expresiones típicas de esta variante del idioma.
+            Instrucciones:
 
-            Descripción de la imagen: {detailed_description}
+            1. Observación inicial: Realiza un análisis visual general, observando aspectos como la forma y el color de las plantas, la disposición de los tallos y hojas, la textura y cualquier otro patrón visual relevante.
+            2. Características del entorno: Examina el paisaje circundante, incluyendo el tipo de suelo, las condiciones climáticas visibles y cualquier elemento que pueda influir en el tipo de cultivo.
+            3. Comparación: Relaciona las características observadas con las propiedades conocidas de diferentes cultivos, haciendo comparaciones para estrechar las posibles opciones.
+            4. Identificación del cultivo: Indica cuál es el cultivo más probable presente en la imagen.
 
-            Esta tarea es crítica para el éxito de nuestro negocio, por lo tanto proporciona un análisis exhaustivo de cada fotografía.
+            **Formato de respuesta (por favor, sigue estrictamente este formato):**
 
-            Tu categorización precisa es muy apreciada y contribuye a la eficacia de nuestras operaciones.
+            "tipo de cultivo:" [nombre del cultivo en español, en minúsculas].
+            "razonamiento:" [explicación detallada de por qué elegiste este cultivo, incluyendo características específicas observadas en la imagen y cómo se alinean con el cultivo identificado].
+
+            **Nota**: Responde en español peninsular, utilizando términos como "patata" en lugar de "papa" y "aguacate" en lugar de "palta". Sigue las normas gramaticales y expresiones típicas de esta variante del idioma.
+
+            Gracias por tu análisis detallado y preciso, que es esencial para nuestras operaciones.
             """
 
+
+
+
             # Create the completion request
-            #Solicitud a la API de Groq
+            # Solicitud a la API de Groq
             completion = client.chat.completions.create(
-                model="llama-3.2-90b-vision-preview",
+                model="llama3-groq-8b-8192-tool-use-preview",
                 messages=[
                     {
                         "role": "user", "content": prompt_text
                     }
                 ],
-                temperature=0.5,
-                max_tokens=1024,
-                top_p=1,
+                temperature=0.3,
+                max_tokens=1500,
+                top_p=0.9,
                 stream=False,
                 stop=None,
             )
@@ -225,7 +191,7 @@ if st.button("Procesar imagen"):
             # Process the response
             response = completion.choices[0].message
             
-            # Extract the crop name from the response
+           # Extract the crop name from the response
             crop_name = extract_crop_name(response.content)
             logging.debug(f"Response content: {response.content}")
             logging.debug(f"Crop name extracted: {crop_name}")
@@ -254,7 +220,11 @@ if st.button("Procesar imagen"):
                     "descripcion": "sin determinar",
                     "razonamiento": razonamiento
                 }
-            st.json(result)
+             # Verificar el resultado antes de mostrarlo
+            if result:
+                st.json(result)
+            else:
+                st.error("Error al generar el resultado.")
             st.write("A continuación, se muestra la respuesta sin formatear, obtenida del modelo:")
             st.write(response.content)
     else:
